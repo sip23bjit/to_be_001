@@ -1,0 +1,156 @@
+- hosts: kube
+  become: true
+  tasks:
+    - name: Install vim
+      dnf:
+        name: vim
+        state: present
+
+    - name: Stop firewalld
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+
+    - name: Update SELinux config
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: 'SELINUX=disabled'
+
+    - name: Configure kernel modules and Kubernetes network
+      block:
+        - name: Enable the kernel modules "overlay" and "br_netfilter"
+          modprobe:
+            name: "{{ item }}"
+          loop:
+            - overlay
+            - br_netfilter
+
+        - name: Configure kernel modules
+          copy:
+            dest: /etc/modules-load.d/k8s.conf
+            content: |
+              overlay
+              br_netfilter
+
+        - name: Create Kubernetes network file to configure system configuration
+          copy:
+            dest: /etc/sysctl.d/k8s.conf
+            content: |
+              net.bridge.bridge-nf-call-iptables = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+              net.ipv4.ip_forward = 1
+
+    - name: Apply sysctl settings
+      command: sudo sysctl --system
+      changed_when: false
+
+    - name: Disable swap
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+
+    - name: Disabling swap
+      become: true
+      shell: swapoff -a
+
+    - name: Reload sysctl config for iptables
+      command: sysctl --system
+    
+    - name: Disable SWAP 
+      shell: |
+        swapoff -a
+    
+    - name: Disable SWAP in fstab 
+      lineinfile:
+        path: /etc/fstab
+        regexp: 'swap'
+        state: absent
+    
+    - name: Install dnf-utils
+      yum:
+        name: yum-utils
+        state: present
+        update_cache: true
+    
+    - name: Install Docker dependencies, add repository, and install containerd
+      block:
+        - name: Install Docker dependencies
+          dnf:
+            name: dnf-utils
+            state: present
+
+        - name: Add Docker repository
+          get_url:
+            url: https://download.docker.com/linux/centos/docker-ce.repo
+            dest: /etc/yum.repos.d/docker-ce.repo
+
+        - name: Install containerd
+          dnf:
+            name: containerd.io
+            state: present
+
+        - name: Install containerd
+          package:
+            name: containerd.io
+            state: present
+
+    - name: Generate containerd config.toml
+      ansible.builtin.command: containerd config default
+      register: containerd_config_result
+
+    - name: Save containerd config.toml
+      ansible.builtin.copy:
+        content: "{{ containerd_config_result.stdout }}"
+        dest: /etc/containerd/config.toml
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create a backup of the containerd configuration file
+      ansible.builtin.command:
+        cmd: cp /etc/containerd/config.toml /etc/containerd/config.toml.orig
+
+    - name: Update SystemdCgroup value in containerd configuration
+      ansible.builtin.replace:
+       path: /etc/containerd/config.toml
+       regexp: '(^\s*SystemdCgroup = )false$'
+       replace: '\1true'
+    - name: Reload containerd service
+      ansible.builtin.service:
+         name: containerd
+         state: restarted
+
+    - name: Enable and start containerd
+      systemd:
+        name: containerd
+        state: started
+        enabled: yes
+
+    - name: Add Kubernetes repository
+      copy:
+        dest: /etc/yum.repos.d/kubernetes.repo
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-$basearch
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+          exclude=kubelet,kubeadm,kubectl
+
+    - name: Install Kubernetes packages and enable kubelet
+      dnf:
+        name: kubelet,kubeadm,kubectl
+        state: present
+        disable_excludes: kubernetes
+      register: kube_packages_result
+
+    - name: Enable and start kubelet
+      when: kube_packages_result is changed
+      systemd:
+        name: kubelet
+        state: started
+        enabled: yes

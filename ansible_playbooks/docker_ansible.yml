@@ -1,0 +1,24 @@
+---
+- name: Install Docker and add jenkins user to docker group
+  hosts: localhost
+  become: true
+
+  tasks:
+    - name: Update server OS packages
+      command: dnf update
+
+    - name: Add Docker CE repository
+      command: dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+
+    - name: Remove old Docker packages
+      command: dnf remove docker docker-common docker-selinux docker-engine
+
+    - name: Install Docker CE, Docker CLI, Containerd, and Docker Compose
+      dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        allow_erasing: yes
